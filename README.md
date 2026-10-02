@@ -14,14 +14,62 @@ kilo のコードの移植ではなく、独立した実装です。
 
 ## ビルド
 
-必要なもの: C99 コンパイラ、ncursesw（ワイド文字版 ncurses）の開発パッケージ、make。
+### 必要なもの
+
+- C99 コンパイラ（gcc または clang）
+- make
+- ncursesw（ワイド文字版 ncurses）の開発パッケージ
+- pkg-config（任意。ncursesw の場所を自動で見つけるために使います）
+- Python 3（`make test` を実行する場合のみ）
+
+### 依存パッケージのインストール
 
 ```sh
 # Debian / Ubuntu
-sudo apt-get install build-essential libncurses-dev
+sudo apt-get install build-essential libncurses-dev pkg-config
 
+# Fedora
+sudo dnf install gcc make ncurses-devel pkgconf-pkg-config
+
+# Arch Linux
+sudo pacman -S base-devel ncurses pkgconf
+
+# macOS（Homebrew。動作未確認）
+brew install ncurses pkg-config
+export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig"
+```
+
+### ビルドと実行
+
+```sh
+git clone https://github.com/sluchin/kilo-ncurses.git
+cd kilo-ncurses
 make
 ./kilo-ncurses [ファイル名]
+```
+
+カレントディレクトリに実行ファイル `kilo-ncurses` ができます。`install` ターゲットはないので、
+必要なら PATH の通った場所へ手動でコピーしてください。
+
+```sh
+sudo install -m 755 kilo-ncurses /usr/local/bin/
+```
+
+### ビルドオプション
+
+コンパイラやフラグは make の変数で変えられます。
+
+```sh
+make CC=clang                 # コンパイラを指定
+make CFLAGS="-O0 -g"          # 最適化なし・デバッグ情報付き
+make clean                    # 生成物を削除
+```
+
+pkg-config が使えない環境では `-lncursesw` でリンクします。ヘッダや
+ライブラリが標準の場所にない場合は、次のように指定してください。
+
+```sh
+make CFLAGS="-O2 -I/opt/ncurses/include" LDLIBS="-L/opt/ncurses/lib -lncursesw"
 ```
 
 ## キー操作
