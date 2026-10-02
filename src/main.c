@@ -1,16 +1,16 @@
 /**
  * @file main.c
- * @brief kilo-ncurses -- a small terminal text editor built on ncurses.
+ * @brief kilo-ncurses: ncurses で作った小さなターミナルテキストエディタ.
  *
- * Features: open / edit / save, incremental search, syntax highlighting for
- * C and Scheme, UTF-8 aware cursor movement and display, status bar.
+ * 機能: ファイルの表示・編集・保存, インクリメンタル検索, C と Scheme の
+ * 構文ハイライト, UTF-8 を考慮したカーソル移動と表示, ステータスバー.
  *
- * Text is kept as an array of lines.  Each line stores raw UTF-8 bytes, so
- * every cursor position is a *byte offset*; display columns are computed on
- * demand by char_width().  All editor state lives in the global #E.
+ * テキストは行の配列として持つ. 各行は UTF-8 のバイト列をそのまま保持するので,
+ * カーソル位置はすべて「バイトオフセット」で表す. 表示上の桁数は必要になったとき
+ * char_width() で計算する. エディタの状態はすべてグローバル変数 #E に置く.
  */
 
-/* Expose POSIX.1-2008 (getline, mkstemp, fsync) and the XSI wide-char API. */
+/* POSIX.1-2008 (getline, mkstemp, fsync) と XSI のワイド文字 API を有効にする. */
 #define _XOPEN_SOURCE 700
 #define _XOPEN_SOURCE_EXTENDED 1
 
@@ -29,35 +29,35 @@
 #include <unistd.h>
 #include <wchar.h>
 
-#define VERSION "0.1.0"    /**< Version string shown on the welcome screen. */
-#define TABSTOP 8          /**< Tab stop width in display columns. */
-#define QUIT_CONFIRMS 2    /**< Extra Ctrl-Q presses needed to quit with unsaved changes. */
-#define QUERY_MAX 256      /**< Maximum prompt input length in bytes. */
+#define VERSION "0.1.0"    /**< ウェルカム画面に表示するバージョン文字列. */
+#define TABSTOP 8          /**< タブ幅(表示桁数). */
+#define QUIT_CONFIRMS 2    /**< 未保存のまま終了するために追加で必要な Ctrl-Q の回数. */
+#define QUERY_MAX 256      /**< プロンプト入力の最大長(バイト). */
 
 /**
- * @brief Highlight classes stored per byte in Line::hl.
+ * @brief 1 バイトごとに Line::hl へ記録するハイライトの種類.
  *
- * The values double as ncurses colour pair numbers (HL_NORMAL uses the
- * terminal default and needs no pair).
+ * 値は ncurses のカラーペア番号としても使う(HL_NORMAL は端末の既定色なので
+ * ペアは不要).
  */
 enum { HL_NORMAL, HL_COMMENT, HL_KEYWORD, HL_TYPE, HL_STRING, HL_NUMBER, HL_PREPROC, HL_MATCH };
 
 /* ------------------------------------------------------------------ */
-/* Syntax definitions                                                  */
+/* 構文定義                                                            */
 /* ------------------------------------------------------------------ */
 
-/** @brief Per-language highlighting rules. */
+/** @brief 言語ごとのハイライト規則. */
 typedef struct {
     const char *name;
-    const char *const *files; /* extensions (".c") or exact base names */
+    const char *const *files; /* 拡張子(".c")または完全一致のファイル名 */
     const char *const *keywords;
     const char *const *types;
-    const char *line_comment; /* introduces a comment up to end of line */
-    const char *block_open;   /* start of a multi-line comment */
-    const char *block_close;  /* end of a multi-line comment */
-    bool lisp_words;          /* words end only at whitespace / brackets / quotes */
-    bool preproc;             /* highlight lines starting with '#' */
-    bool char_literals;       /* 'x' is a character literal */
+    const char *line_comment; /* 行末までのコメントを始める文字列 */
+    const char *block_open;   /* 複数行コメントの開始 */
+    const char *block_close;  /* 複数行コメントの終了 */
+    bool lisp_words;          /* 単語の区切りを空白・括弧・引用符だけにする */
+    bool preproc;             /* '#' で始まる行をプリプロセッサ行として色付けする */
+    bool char_literals;       /* 'x' を文字リテラルとして扱う */
 } Syntax;
 
 static const char *const c_files[] = {".c", ".h", ".cpp", ".hpp", ".cc", NULL};
@@ -84,56 +84,56 @@ static const char *const scm_types[] = {
     "symbol?", "procedure?", "display", "write", "newline", "vector", "assq",
     "assoc", "member", "#t", "#f", NULL};
 
-/* Known languages; select_syntax() picks one from the file name. */
+/* 対応する言語の一覧. select_syntax() がファイル名から 1 つ選ぶ. */
 static const Syntax syntaxes[] = {
     {"C", c_files, c_keywords, c_types, "//", "/*", "*/", false, true, true},
     {"Scheme", scm_files, scm_keywords, scm_types, ";", "#|", "|#", true, false, false},
 };
-/** @brief Number of entries in syntaxes[]. */
+/** @brief syntaxes[] の要素数. */
 #define SYNTAX_COUNT (sizeof(syntaxes) / sizeof(syntaxes[0]))
 
 /* ------------------------------------------------------------------ */
-/* Editor state                                                        */
+/* エディタの状態                                                      */
 /* ------------------------------------------------------------------ */
 
-/** @brief One line of text (without the trailing newline). */
+/** @brief テキストの 1 行(末尾の改行は含まない). */
 typedef struct {
-    char *s;                /* UTF-8 bytes, always NUL terminated */
-    size_t len, cap;        /* used bytes (excluding NUL) / allocated bytes */
-    unsigned char *hl;      /* one HL_* class per byte, same length as s */
-    bool open_comment; /* line ends inside a block comment */
+    char *s;                /* UTF-8 のバイト列. 常に NUL で終わる */
+    size_t len, cap;        /* 使用バイト数(NUL を除く) / 確保バイト数 */
+    unsigned char *hl;      /* バイトごとの HL_* 種別. s と同じ長さ */
+    bool open_comment;      /* 行末がブロックコメントの途中 */
 } Line;
 
-/** @brief The whole editor state (single global instance). */
+/** @brief エディタ全体の状態(グローバルに 1 つだけ). */
 static struct {
     Line *lines;
     int n, cap;
-    int cx, cy;       /* cursor: byte offset in line, line index */
-    int want_col;     /* preferred display column for vertical moves */
-    int rowoff, coloff; /* first visible line / first visible display column */
+    int cx, cy;         /* カーソル: 行内のバイトオフセット, 行番号 */
+    int want_col;       /* 上下移動で保ちたい表示桁 */
+    int rowoff, coloff; /* 表示先頭の行 / 表示先頭の桁 */
     char *filename;
     bool dirty;
     const Syntax *syntax;
-    char msg[160];    /* message bar text */
-    time_t msg_time;  /* when msg was set; it fades after 5 seconds */
-    int quit_left;    /* Ctrl-Q presses still required to quit */
-    bool screen_on;   /* ncurses is active (endwin() still to be called) */
-    bool color;       /* the terminal supports colours */
-    int prompt_col;   /* cursor column while prompting, or -1 */
+    char msg[160];    /* メッセージバーの文字列 */
+    time_t msg_time;  /* msg を設定した時刻. 5 秒で消える */
+    int quit_left;    /* 終了までに必要な Ctrl-Q の残り回数 */
+    bool screen_on;   /* ncurses が有効(endwin() がまだ必要) */
+    bool color;       /* 端末が色に対応している */
+    int prompt_col;   /* プロンプト入力中のカーソル桁, 入力中でなければ -1 */
 } E;
 
-/** @brief Incremental search state (single global instance). */
+/** @brief インクリメンタル検索の状態(グローバルに 1 つだけ). */
 static struct {
-    int row;               /* line of the current match, -1 if none yet */
-    size_t col, len;       /* byte offset and length of the match (len 0: none) */
-    int dir;               /* search direction: +1 forward, -1 backward */
-    int from_cy, from_cx;  /* cursor when the search started (restored on Esc) */
+    int row;               /* 現在の一致がある行. まだ一致がなければ -1 */
+    size_t col, len;       /* 一致位置(バイト)と長さ(len が 0 なら一致なし) */
+    int dir;               /* 検索方向: 前方 +1, 後方 -1 */
+    int from_cy, from_cx;  /* 検索開始時のカーソル(Esc で戻す) */
 } S = {-1, 0, 0, 1, 0, 0};
 
 /**
- * @brief Set the message bar text (printf style).
+ * @brief メッセージバーの文字列を設定する(printf 形式).
  *
- * The message is shown for five seconds, or for as long as a prompt is open.
+ * メッセージは 5 秒間, またはプロンプトが開いている間表示される.
  */
 static void set_msg(const char *fmt, ...)
 {
@@ -145,9 +145,9 @@ static void set_msg(const char *fmt, ...)
 }
 
 /**
- * @brief Leave ncurses mode so the terminal is restored.
+ * @brief ncurses モードを抜けて端末を元の状態に戻す.
  *
- * Safe to call more than once; also registered with atexit().
+ * 何度呼んでも安全. atexit() にも登録している.
  */
 static void shutdown_screen(void)
 {
@@ -158,8 +158,8 @@ static void shutdown_screen(void)
 }
 
 /**
- * @brief Restore the terminal, print `what: strerror(errno)` and exit(1).
- * @param what Short description of the failed operation.
+ * @brief 端末を元に戻し, `what: strerror(errno)` を表示して exit(1) する.
+ * @param what 失敗した操作の短い説明.
  */
 static void die(const char *what)
 {
@@ -170,9 +170,9 @@ static void die(const char *what)
 }
 
 /**
- * @brief realloc() that never fails: it aborts the editor when out of memory.
+ * @brief 失敗しない realloc(). メモリ不足のときはエディタを異常終了させる.
  *
- * A request for 0 bytes is rounded up to 1 so NULL always means failure.
+ * サイズ 0 の要求は 1 に切り上げるので, NULL は常に失敗を意味する.
  */
 static void *xrealloc(void *p, size_t n)
 {
@@ -183,47 +183,47 @@ static void *xrealloc(void *p, size_t n)
 }
 
 /* ------------------------------------------------------------------ */
-/* UTF-8 helpers and display width                                     */
+/* UTF-8 の補助関数と表示幅                                            */
 /* ------------------------------------------------------------------ */
 
 enum { K_PLAIN, K_TAB, K_CTRL, K_BAD };
 
 /**
- * @brief Measure the character at the start of @p s.
- * @param s     Bytes starting at the character (UTF-8).
- * @param n     Number of bytes available in @p s.
- * @param col   Display column the character starts at (tabs depend on it).
- * @param[out] adv  Number of bytes the character occupies.
- * @param[out] kind K_PLAIN, K_TAB, K_CTRL (shown as ^X) or K_BAD (invalid UTF-8).
- * @return Width in display columns.
+ * @brief @p s の先頭にある 1 文字の幅を測る.
+ * @param s     文字の先頭から始まるバイト列(UTF-8).
+ * @param n     @p s の残りバイト数.
+ * @param col   この文字が始まる表示桁(タブの幅はこれで決まる).
+ * @param[out] adv  この文字が占めるバイト数.
+ * @param[out] kind K_PLAIN, K_TAB, K_CTRL(^X と表示), K_BAD(不正な UTF-8).
+ * @return 表示幅(桁数).
  */
 static int char_width(const char *s, size_t n, int col, size_t *adv, int *kind)
 {
     unsigned char c = (unsigned char)s[0];
     *kind = K_PLAIN;
-    /* Tabs advance to the next multiple of TABSTOP. */
+    /* タブは次の TABSTOP の倍数まで進む. */
     if (c == '\t') {
         *adv = 1;
         *kind = K_TAB;
         return TABSTOP - col % TABSTOP;
     }
-    /* Control characters are drawn as two cells: ^X. */
+    /* 制御文字は 2 桁(^X)で描く. */
     if (c < 0x20 || c == 0x7f) {
         *adv = 1;
         *kind = K_CTRL;
         return 2;
     }
-    /* Fast path for ASCII. */
+    /* ASCII の高速パス. */
     if (c < 0x80) {
         *adv = 1;
         return 1;
     }
-    /* Multibyte: let the C library decode it and report its width. */
+    /* マルチバイト: 復号と幅の判定は C ライブラリに任せる. */
     wchar_t wc;
     mbstate_t st;
     memset(&st, 0, sizeof st);
     size_t r = mbrtowc(&wc, s, n, &st);
-    /* Invalid or truncated sequence: treat the byte as one cell ("?"). */
+    /* 不正または途中で切れた列: 1 バイトを 1 桁("?")として扱う. */
     if (r == (size_t)-1 || r == (size_t)-2 || r == 0) {
         *adv = 1;
         *kind = K_BAD;
@@ -231,11 +231,11 @@ static int char_width(const char *s, size_t n, int col, size_t *adv, int *kind)
     }
     *adv = r;
     int w = wcwidth(wc);
-    return w < 0 ? 1 : w; /* wcwidth() < 0: not printable, use one cell */
+    return w < 0 ? 1 : w; /* wcwidth() が負なら表示不能なので 1 桁にする */
 }
 
 /**
- * @brief Display column of byte offset @p upto in line @p l.
+ * @brief 行 @p l のバイトオフセット @p upto に対応する表示桁を返す.
  */
 static int disp_col(const Line *l, size_t upto)
 {
@@ -251,10 +251,10 @@ static int disp_col(const Line *l, size_t upto)
 }
 
 /**
- * @brief Byte offset of the character covering display column @p target.
+ * @brief 表示桁 @p target を覆う文字のバイトオフセットを返す.
  *
- * Used by vertical movement: a wide character that straddles @p target is
- * not skipped over, so the cursor never lands in the middle of a character.
+ * 上下移動で使う. @p target をまたぐ全角文字は飛ばさないので,
+ * カーソルが文字の途中に来ることはない.
  */
 static size_t col_to_off(const Line *l, int target)
 {
@@ -264,7 +264,7 @@ static size_t col_to_off(const Line *l, int target)
         size_t adv;
         int kind;
         int w = char_width(l->s + i, l->len - i, col, &adv, &kind);
-        if (col + w > target) /* this character would cover or pass the target */
+        if (col + w > target) /* この文字が target を覆うか越える */
             break;
         col += w;
         i += adv;
@@ -273,8 +273,8 @@ static size_t col_to_off(const Line *l, int target)
 }
 
 /**
- * @brief Byte offset of the character following the one at @p pos
- *        (clamped to the line length).
+ * @brief @p pos にある文字の次の文字のバイトオフセットを返す
+ *        (行の長さで頭打ち).
  */
 static size_t next_cp(const Line *l, size_t pos)
 {
@@ -287,9 +287,9 @@ static size_t next_cp(const Line *l, size_t pos)
 }
 
 /**
- * @brief Byte offset of the character preceding @p pos.
+ * @brief @p pos の直前にある文字のバイトオフセットを返す.
  *
- * Walks back over UTF-8 continuation bytes (10xxxxxx), at most 4 bytes.
+ * UTF-8 の継続バイト(10xxxxxx)を最大 4 バイトまで戻る.
  */
 static size_t prev_cp(const Line *l, size_t pos)
 {
@@ -302,15 +302,14 @@ static size_t prev_cp(const Line *l, size_t pos)
 }
 
 /* ------------------------------------------------------------------ */
-/* Syntax highlighting                                                 */
+/* 構文ハイライト                                                      */
 /* ------------------------------------------------------------------ */
 
 /**
- * @brief Whether @p c separates words in the given language.
+ * @brief @p c がその言語で単語の区切りかどうかを返す.
  *
- * C-like languages break words at anything that is not an identifier
- * character; Lisp-like languages only at whitespace, brackets and quotes
- * (so `let*` and `set!` stay single words).
+ * C 系の言語では識別子に使えない文字すべてが区切りになる. Lisp 系では
+ * 空白・括弧・引用符だけが区切りなので, `let*` や `set!` は 1 語のままになる.
  */
 static bool is_delim(const Syntax *sy, unsigned char c)
 {
@@ -321,14 +320,14 @@ static bool is_delim(const Syntax *sy, unsigned char c)
     return !(isalnum(c) || c == '_' || c >= 0x80);
 }
 
-/** @brief Whether line @p l contains the string @p p at byte offset @p i. */
+/** @brief 行 @p l のバイトオフセット @p i に文字列 @p p があるかどうかを返す. */
 static bool at(const Line *l, size_t i, const char *p)
 {
     size_t n = strlen(p);
     return i + n <= l->len && memcmp(l->s + i, p, n) == 0;
 }
 
-/** @brief Whether the @p n bytes at @p w equal one entry of the NULL terminated @p list. */
+/** @brief @p w から @p n バイトが, NULL 終端の @p list のどれかと一致するかどうかを返す. */
 static bool in_list(const char *const *list, const char *w, size_t n)
 {
     for (; *list; list++)
@@ -337,17 +336,16 @@ static bool in_list(const char *const *list, const char *w, size_t n)
     return false;
 }
 
-
 /**
- * @brief Compute the highlight classes of one line.
- * @param l        Line to highlight; l->hl is (re)allocated and filled.
- * @param in_block True if the previous line ended inside a block comment.
- * @return True if this line ends inside a block comment.
+ * @brief 1 行分のハイライト種別を計算する.
+ * @param l        対象の行. l->hl を(再)確保して埋める.
+ * @param in_block 前の行がブロックコメントの途中で終わっていれば true.
+ * @return この行がブロックコメントの途中で終わるなら true.
  *
- * A single left-to-right scan; the state carried between iterations is
- * @c in_block (inside a block comment), @c quote (inside a string, holds the
- * quote character) and @c prev_delim (the previous byte ended a word, so a
- * number or keyword may start here).
+ * 左から右への 1 回の走査で行う. 繰り返しの間に持ち回る状態は
+ * @c in_block(ブロックコメント中), @c quote(文字列中. 引用符の文字を保持),
+ * @c prev_delim(直前のバイトが単語の終わりなので, ここから数値やキーワードが
+ * 始まりうる)の 3 つ.
  */
 static bool highlight_line(Line *l, bool in_block)
 {
@@ -357,7 +355,7 @@ static bool highlight_line(Line *l, bool in_block)
     if (!sy)
         return false;
 
-    /* Shorthands for the scan below. */
+    /* 以降の走査で使う短い別名. */
     unsigned char *hl = l->hl;
     const char *s = l->s;
     size_t n = l->len, i = 0;
@@ -365,7 +363,7 @@ static bool highlight_line(Line *l, bool in_block)
     int quote = 0;
     size_t bo = strlen(sy->block_open), bc = strlen(sy->block_close);
 
-    /* A line whose first non-blank character is # is a preprocessor line. */
+    /* 最初の空白以外の文字が # の行は, プリプロセッサ行. */
     if (sy->preproc && !in_block) {
         size_t k = 0;
         while (k < n && isspace((unsigned char)s[k]))
@@ -379,7 +377,7 @@ static bool highlight_line(Line *l, bool in_block)
     while (i < n) {
         unsigned char c = (unsigned char)s[i];
 
-        /* Inside a block comment: colour everything up to the closing marker. */
+        /* ブロックコメント中: 終了記号まですべてコメント色にする. */
         if (in_block) {
             hl[i] = HL_COMMENT;
             if (at(l, i, sy->block_close)) {
@@ -392,10 +390,10 @@ static bool highlight_line(Line *l, bool in_block)
             }
             continue;
         }
-        /* Inside a string or character literal. */
+        /* 文字列または文字リテラルの中. */
         if (quote) {
             hl[i] = HL_STRING;
-            if (c == '\\' && i + 1 < n) { /* backslash escape: skip the next byte */
+            if (c == '\\' && i + 1 < n) { /* バックスラッシュのエスケープ: 次のバイトを飛ばす */
                 hl[i + 1] = HL_STRING;
                 i += 2;
                 continue;
@@ -407,19 +405,19 @@ static bool highlight_line(Line *l, bool in_block)
             i++;
             continue;
         }
-        /* Line comment: the rest of the line. */
+        /* 行コメント: 行末まですべて. */
         if (at(l, i, sy->line_comment)) {
             memset(hl + i, HL_COMMENT, n - i);
             return false;
         }
-        /* Start of a block comment (it may close on the same line). */
+        /* ブロックコメントの開始(同じ行で閉じることもある). */
         if (at(l, i, sy->block_open)) {
             memset(hl + i, HL_COMMENT, bo);
             i += bo;
             in_block = true;
             continue;
         }
-        /* Scheme character literal such as #\a or #\space. */
+        /* Scheme の文字リテラル. 例: #\a, #\space. */
         if (sy->lisp_words && c == '#' && i + 2 < n && s[i + 1] == '\\') {
             size_t j = i + 3;
             while (j < n && ((unsigned char)s[j] & 0xC0) == 0x80)
@@ -431,14 +429,14 @@ static bool highlight_line(Line *l, bool in_block)
             prev_delim = false;
             continue;
         }
-        /* Start of a string (or C character literal). */
+        /* 文字列(または C の文字リテラル)の開始. */
         if (c == '"' || (sy->char_literals && c == '\'')) {
             quote = c;
             hl[i++] = HL_STRING;
             prev_delim = false;
             continue;
         }
-        /* Number: starts at a word boundary with a digit (or .5). */
+        /* 数値: 単語の境目で数字(または .5)から始まる. */
         if (prev_delim && (isdigit(c) || (c == '.' && i + 1 < n && isdigit((unsigned char)s[i + 1])))) {
             size_t j = i;
             while (j < n && (isalnum((unsigned char)s[j]) || s[j] == '.' || s[j] == '_'))
@@ -448,7 +446,7 @@ static bool highlight_line(Line *l, bool in_block)
             prev_delim = false;
             continue;
         }
-        /* Word: classify it as keyword / type, otherwise leave it normal. */
+        /* 単語: キーワードか型に分類し, どちらでもなければ通常のままにする. */
         if (prev_delim && !is_delim(sy, c)) {
             size_t j = i;
             while (j < n && !is_delim(sy, (unsigned char)s[j]))
@@ -463,7 +461,7 @@ static bool highlight_line(Line *l, bool in_block)
             prev_delim = false;
             continue;
         }
-        /* Any other byte: remember whether it ends a word. */
+        /* それ以外のバイト: 単語の終わりかどうかだけを覚えておく. */
         prev_delim = is_delim(sy, c);
         i++;
     }
@@ -471,15 +469,14 @@ static bool highlight_line(Line *l, bool in_block)
 }
 
 /**
- * @brief Recompute highlighting starting at line @p from.
- * @param from  First line to recompute.
- * @param force Number of lines that are always recomputed.
+ * @brief 行 @p from からハイライトを再計算する.
+ * @param from  最初に再計算する行.
+ * @param force 必ず再計算する行数.
  *
- * Later lines are only recomputed while the "ends inside a block comment"
- * state keeps changing, so typing in a normal line costs one line, whereas
- * opening a comment repaints everything below it.
+ * それ以降の行は「ブロックコメントの途中で終わる」状態が変わり続ける間だけ
+ * 再計算する. 通常の行で入力しても 1 行分の計算で済み, コメントを開いたときだけ
+ * 下の行がすべて塗り直される.
  */
-
 static void rehighlight(int from, int force)
 {
     if (from < 0)
@@ -489,16 +486,16 @@ static void rehighlight(int from, int force)
         bool old = E.lines[j].open_comment;
         E.lines[j].open_comment = highlight_line(&E.lines[j], in);
         in = E.lines[j].open_comment;
-        /* Past the forced range and the state did not change: nothing below changes. */
+        /* 強制範囲を過ぎて状態が変わらなければ, これより下も変わらない. */
         if (j - from + 1 >= force && old == in)
             break;
     }
 }
 
 /**
- * @brief Choose E.syntax from the extension or base name of @p filename.
+ * @brief @p filename の拡張子またはベース名から E.syntax を選ぶ.
  *
- * Leaves E.syntax NULL (plain text) when nothing matches.
+ * 一致するものがなければ E.syntax は NULL(プレーンテキスト)のまま.
  */
 static void select_syntax(const char *filename)
 {
@@ -517,10 +514,10 @@ static void select_syntax(const char *filename)
 }
 
 /* ------------------------------------------------------------------ */
-/* Text buffer                                                         */
+/* テキストバッファ                                                    */
 /* ------------------------------------------------------------------ */
 
-/** @brief Make sure line @p l can hold @p need bytes plus the NUL (capacity doubles). */
+/** @brief 行 @p l が NUL を含めて @p need バイトを保持できるようにする(容量は倍々に増やす). */
 static void line_reserve(Line *l, size_t need)
 {
     if (need + 1 > l->cap) {
@@ -532,7 +529,7 @@ static void line_reserve(Line *l, size_t need)
     }
 }
 
-/** @brief Insert @p n bytes of @p s into line @p l at byte offset @p at_. */
+/** @brief 行 @p l のバイトオフセット @p at_ に @p s の @p n バイトを挿入する. */
 static void line_insert(Line *l, size_t at_, const char *s, size_t n)
 {
     line_reserve(l, l->len + n);
@@ -542,7 +539,7 @@ static void line_insert(Line *l, size_t at_, const char *s, size_t n)
     l->s[l->len] = '\0';
 }
 
-/** @brief Remove @p n bytes from line @p l starting at byte offset @p at_. */
+/** @brief 行 @p l のバイトオフセット @p at_ から @p n バイトを削除する. */
 static void line_remove(Line *l, size_t at_, size_t n)
 {
     memmove(l->s + at_, l->s + at_ + n, l->len - at_ - n);
@@ -551,9 +548,9 @@ static void line_remove(Line *l, size_t at_, size_t n)
 }
 
 /**
- * @brief Insert a new line with the given text as line number @p at_.
+ * @brief 指定の文字列を持つ新しい行を, 行番号 @p at_ として挿入する.
  *
- * Lines after it move down by one; the new line has no highlighting yet.
+ * それ以降の行は 1 つ下にずれる. 新しい行のハイライトはまだ計算されていない.
  */
 static void buf_insert_row(int at_, const char *s, size_t n)
 {
@@ -562,7 +559,7 @@ static void buf_insert_row(int at_, const char *s, size_t n)
         E.lines = xrealloc(E.lines, (size_t)E.cap * sizeof(Line));
     }
     memmove(&E.lines[at_ + 1], &E.lines[at_], (size_t)(E.n - at_) * sizeof(Line));
-    /* Open a gap, then initialise the new line in it. */
+    /* 隙間を空けてから, そこに新しい行を初期化する. */
     Line *l = &E.lines[at_];
     memset(l, 0, sizeof *l);
     line_reserve(l, n);
@@ -572,7 +569,7 @@ static void buf_insert_row(int at_, const char *s, size_t n)
     E.n++;
 }
 
-/** @brief Delete line number @p at_ and free its memory. */
+/** @brief 行番号 @p at_ の行を削除してメモリを解放する. */
 static void buf_delete_row(int at_)
 {
     free(E.lines[at_].s);
@@ -582,10 +579,10 @@ static void buf_delete_row(int at_)
 }
 
 /**
- * @brief Remember the cursor's display column.
+ * @brief カーソルの表示桁を覚えておく.
  *
- * Vertical movement aims for this column so the cursor does not drift
- * left when it passes over a short line.
+ * 上下移動はこの桁を目指すので, 短い行を通り過ぎても
+ * カーソルが左へずれていかない.
  */
 static void update_want(void)
 {
@@ -593,10 +590,10 @@ static void update_want(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* Editing operations                                                  */
+/* 編集操作                                                            */
 /* ------------------------------------------------------------------ */
 
-/** @brief Insert @p n bytes (one whole UTF-8 character) at the cursor. */
+/** @brief カーソル位置に @p n バイト(UTF-8 の 1 文字)を挿入する. */
 static void insert_text(const char *s, size_t n)
 {
     line_insert(&E.lines[E.cy], (size_t)E.cx, s, n);
@@ -606,27 +603,27 @@ static void insert_text(const char *s, size_t n)
     update_want();
 }
 
-/** @brief Split the current line at the cursor (Enter). */
+/** @brief 現在の行をカーソル位置で分割する(Enter). */
 static void insert_newline(void)
 {
     Line *l = &E.lines[E.cy];
     size_t tail = l->len - (size_t)E.cx;
     buf_insert_row(E.cy + 1, l->s + E.cx, tail);
-    /* buf_insert_row() may have moved the array: fetch the pointer again. */
+    /* buf_insert_row() が配列を移動したかもしれないので, ポインタを取り直す. */
     l = &E.lines[E.cy];
     l->len = (size_t)E.cx;
     l->s[l->len] = '\0';
     E.cy++;
     E.cx = 0;
     E.dirty = true;
-    rehighlight(E.cy - 1, 2); /* both halves of the split line */
+    rehighlight(E.cy - 1, 2); /* 分割した両方の行 */
     update_want();
 }
 
 /**
- * @brief Delete the character before the cursor (Backspace).
+ * @brief カーソルの前の文字を削除する(Backspace).
  *
- * At the start of a line the line is joined to the previous one.
+ * 行頭では前の行と連結する.
  */
 static void delete_back(void)
 {
@@ -637,7 +634,7 @@ static void delete_back(void)
         E.cx = (int)p;
         rehighlight(E.cy, 1);
     } else if (E.cy > 0) {
-        /* Join with the previous line; the cursor goes to the join point. */
+        /* 前の行と連結する. カーソルは連結位置に移る. */
         Line *prev = &E.lines[E.cy - 1];
         size_t pos = prev->len;
         line_insert(prev, prev->len, l->s, l->len);
@@ -653,9 +650,9 @@ static void delete_back(void)
 }
 
 /**
- * @brief Delete the character under the cursor (Delete).
+ * @brief カーソル位置の文字を削除する(Delete).
  *
- * At the end of a line the next line is joined to this one.
+ * 行末では次の行をこの行に連結する.
  */
 static void delete_forward(void)
 {
@@ -676,14 +673,14 @@ static void delete_forward(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* File I/O                                                            */
+/* ファイル入出力                                                      */
 /* ------------------------------------------------------------------ */
 
 /**
- * @brief Load @p path into the buffer and pick the syntax from its name.
+ * @brief @p path をバッファに読み込み, 名前から構文を選ぶ.
  *
- * A missing file is not an error: the editor starts empty and creates the
- * file on the first save.  CR and LF at line ends are stripped.
+ * ファイルが存在しなくてもエラーにはしない. 空の状態で始まり,
+ * 最初の保存でファイルが作られる. 行末の CR と LF は取り除く.
  */
 static void open_file(const char *path)
 {
@@ -703,7 +700,7 @@ static void open_file(const char *path)
     size_t cap = 0;
     ssize_t len;
     while ((len = getline(&line, &cap, fp)) != -1) {
-        /* Strip the line ending (LF or CRLF). */
+        /* 行末(LF または CRLF)を取り除く. */
         while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
             len--;
         buf_insert_row(E.n, line, (size_t)len);
@@ -715,18 +712,18 @@ static void open_file(const char *path)
 }
 
 /**
- * @brief Write the buffer to @p path atomically.
- * @param path  Destination file.
- * @param[out] bytes Number of bytes written on success.
- * @return True on success; on failure errno is set and the old file is untouched.
+ * @brief バッファを @p path へアトミックに書き出す.
+ * @param path  書き込み先のファイル.
+ * @param[out] bytes 成功時に書き込んだバイト数.
+ * @return 成功なら true. 失敗時は errno が設定され, 元のファイルは変更されない.
  *
- * The text goes to a temporary file in the same directory which is flushed
- * (fsync), given the original permission bits and then renamed over the
- * target, so a crash cannot leave a half written file.
+ * テキストは同じディレクトリの一時ファイルに書き, flush(fsync)し,
+ * 元のパーミッションを設定してから目的のファイルへ rename する.
+ * そのため, 途中で落ちても書きかけのファイルが残ることはない.
  */
 static bool write_file(const char *path, size_t *bytes)
 {
-    /* Temporary file next to the target so rename() stays on one file system. */
+    /* rename() が同じファイルシステム内で済むよう, 一時ファイルは対象の隣に作る. */
     char tmp[PATH_MAX];
     if (snprintf(tmp, sizeof tmp, "%s.XXXXXX", path) >= (int)sizeof tmp) {
         errno = ENAMETOOLONG;
@@ -736,7 +733,7 @@ static bool write_file(const char *path, size_t *bytes)
     if (fd == -1)
         return false;
     struct stat st;
-    /* Keep the permissions of an existing file; new files get 0644. */
+    /* 既存ファイルのパーミッションは保つ. 新規ファイルは 0644 にする. */
     mode_t mode = stat(path, &st) == 0 ? st.st_mode & 07777 : 0644;
     FILE *fp = fdopen(fd, "w");
     if (!fp) {
@@ -750,14 +747,14 @@ static bool write_file(const char *path, size_t *bytes)
             goto fail;
         total += E.lines[i].len + 1;
     }
-    /* Make sure the data is on disk before the old file is replaced. */
+    /* 古いファイルを置き換える前に, データをディスクへ確実に書き出す. */
     if (fflush(fp) != 0 || fsync(fd) != 0 || fchmod(fd, mode) != 0)
         goto fail;
     if (fclose(fp) != 0) {
         unlink(tmp);
         return false;
     }
-    /* Atomically replace the target. */
+    /* 対象のファイルをアトミックに置き換える. */
     if (rename(tmp, path) != 0) {
         unlink(tmp);
         return false;
@@ -771,16 +768,16 @@ fail:
 }
 
 /* ------------------------------------------------------------------ */
-/* Screen                                                              */
+/* 画面                                                                */
 /* ------------------------------------------------------------------ */
 
-/** @brief Number of screen rows used for text (all but status and message bars). */
+/** @brief テキストに使う画面の行数(ステータスバーとメッセージバーを除く). */
 static int text_rows(void)
 {
     return LINES > 2 ? LINES - 2 : 1;
 }
 
-/** @brief Adjust E.rowoff / E.coloff so the cursor is inside the window. */
+/** @brief カーソルがウィンドウ内に収まるよう E.rowoff / E.coloff を調整する. */
 static void scroll_to_cursor(void)
 {
     int rows = text_rows();
@@ -789,21 +786,21 @@ static void scroll_to_cursor(void)
         E.rowoff = E.cy;
     if (E.cy >= E.rowoff + rows)
         E.rowoff = E.cy - rows + 1;
-    /* Horizontal scroll uses display columns, not byte offsets. */
+    /* 横スクロールはバイトオフセットではなく表示桁で行う. */
     if (rx < E.coloff)
         E.coloff = rx;
     if (rx >= E.coloff + COLS)
         E.coloff = rx - COLS + 1;
 }
 
-/** @brief Set up one colour pair per highlight class (default background kept). */
+/** @brief ハイライト種別ごとにカラーペアを設定する(背景は端末の既定色のまま). */
 static void init_colors(void)
 {
     E.color = has_colors();
     if (!E.color)
         return;
     start_color();
-    use_default_colors(); /* lets -1 mean "terminal default" below */
+    use_default_colors(); /* 以下の -1 を「端末の既定色」の意味にする */
     init_pair(HL_COMMENT, COLOR_CYAN, -1);
     init_pair(HL_KEYWORD, COLOR_YELLOW, -1);
     init_pair(HL_TYPE, COLOR_GREEN, -1);
@@ -814,9 +811,9 @@ static void init_colors(void)
 }
 
 /**
- * @brief Select the drawing attributes for highlight class @p h.
+ * @brief ハイライト種別 @p h に対応する描画属性を選ぶ.
  *
- * Without colour support, falls back to bold / dim / underline / reverse.
+ * 色に対応していない端末では, 太字・暗め・下線・反転で代用する.
  */
 static void set_hl_attr(int h)
 {
@@ -830,12 +827,11 @@ static void set_hl_attr(int h)
 }
 
 /**
- * @brief Draw line @p l (index @p idx) on screen row @p y.
+ * @brief 行 @p l(番号 @p idx)を画面の行 @p y に描く.
  *
- * Handles horizontal scrolling, tabs (expanded to spaces), control characters
- * (shown as ^X), invalid bytes (shown as ?) and the search match overlay.
- * A wide character cut by the left edge is replaced by spaces; one that
- * does not fit at the right edge is not drawn.
+ * 横スクロール, タブ(空白に展開), 制御文字(^X と表示), 不正なバイト(? と表示),
+ * 検索の一致位置の重ね描きを処理する. 左端で切れた全角文字は空白に置き換え,
+ * 右端に収まらない文字は描かない.
  */
 static void draw_line(const Line *l, int idx, int y)
 {
@@ -847,10 +843,10 @@ static void draw_line(const Line *l, int idx, int y)
         int kind;
         int w = char_width(l->s + i, l->len - i, col, &adv, &kind);
         int h = l->hl ? l->hl[i] : HL_NORMAL;
-        /* Overlay the current search match. */
+        /* 現在の検索の一致位置を重ねて描く. */
         if (S.len && S.row == idx && i >= S.col && i < S.col + S.len)
             h = HL_MATCH;
-        int sx = col - E.coloff; /* screen column of this character */
+        int sx = col - E.coloff; /* この文字の画面上の桁 */
         if (sx + w > COLS)
             break;
         if (sx >= 0) {
@@ -881,7 +877,7 @@ static void draw_line(const Line *l, int idx, int y)
     attrset(A_NORMAL);
 }
 
-/** @brief Draw all text rows, `~` after the end, and the welcome text for an empty buffer. */
+/** @brief テキスト行をすべて描く. 末尾より後ろは `~`, 空のバッファではウェルカム表示を出す. */
 static void draw_rows(void)
 {
     int rows = text_rows();
@@ -903,7 +899,7 @@ static void draw_rows(void)
     }
 }
 
-/** @brief Draw the reverse-video status bar (file name, line count, syntax, position). */
+/** @brief 反転表示のステータスバーを描く(ファイル名, 行数, 構文, 位置). */
 static void draw_status(void)
 {
     char left[160], right[64];
@@ -914,20 +910,20 @@ static void draw_status(void)
     mvhline(LINES - 2, 0, ' ', COLS);
     mvaddnstr(LINES - 2, 0, left, COLS);
     int rl = (int)strlen(right);
-    /* Show the right part only if it does not overlap the left one. */
+    /* 右側は, 左側と重ならないときだけ表示する. */
     if ((int)strlen(left) + rl < COLS)
         mvaddstr(LINES - 2, COLS - rl, right);
     attrset(A_NORMAL);
 }
 
-/** @brief Draw the message bar (bottom line) while the message is fresh or a prompt is open. */
+/** @brief メッセージバー(最下行)を描く. メッセージが新しいか, プロンプトが開いている間だけ表示する. */
 static void draw_message(void)
 {
     if (E.msg[0] && (time(NULL) - E.msg_time < 5 || E.prompt_col >= 0))
         mvaddnstr(LINES - 1, 0, E.msg, COLS);
 }
 
-/** @brief Redraw everything and put the cursor in the right place. */
+/** @brief 画面全体を再描画し, カーソルを正しい位置に置く. */
 static void refresh_screen(void)
 {
     scroll_to_cursor();
@@ -935,7 +931,7 @@ static void refresh_screen(void)
     draw_rows();
     draw_status();
     draw_message();
-    /* While prompting the cursor sits in the message bar. */
+    /* プロンプト入力中は, カーソルをメッセージバーに置く. */
     if (E.prompt_col >= 0) {
         move(LINES - 1, E.prompt_col < COLS ? E.prompt_col : COLS - 1);
     } else {
@@ -946,20 +942,20 @@ static void refresh_screen(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* Prompt                                                              */
+/* プロンプト                                                          */
 /* ------------------------------------------------------------------ */
 
 /**
- * @brief Callback invoked by prompt() after every key.
- * @param buf     Current input text.
- * @param key     The key that was pressed.
- * @param special True if @p key is a function key (KEY_*), false for a character.
+ * @brief prompt() がキーを受けるたびに呼ぶコールバック.
+ * @param buf     現在の入力テキスト.
+ * @param key     押されたキー.
+ * @param special @p key がファンクションキー(KEY_*)なら true, 文字なら false.
  */
 typedef void (*PromptCb)(const char *buf, wint_t key, bool special);
 
 /**
- * @brief Encode wide character @p k as UTF-8 into @p out (at least 8 bytes).
- * @return Number of bytes written, 0 if @p k cannot be encoded.
+ * @brief ワイド文字 @p k を UTF-8 にして @p out(8 バイト以上)へ書く.
+ * @return 書き込んだバイト数. 符号化できなければ 0.
  */
 static size_t utf8_encode(wint_t k, char *out)
 {
@@ -970,13 +966,13 @@ static size_t utf8_encode(wint_t k, char *out)
 }
 
 /**
- * @brief Read a line of text in the message bar.
- * @param label Text shown before the input.
- * @param cb    Optional per-key callback (used for incremental search).
- * @return Malloc'ed input, or NULL if the user pressed Esc.
+ * @brief メッセージバーで 1 行のテキストを読み取る.
+ * @param label 入力の前に表示する文字列.
+ * @param cb    キーごとに呼ばれる任意のコールバック(インクリメンタル検索で使う).
+ * @return malloc された入力文字列. Esc が押されたら NULL.
  *
- * Enter on an empty input is ignored.  The callback also sees the final
- * Enter / Esc key so it can finish its work.
+ * 空の入力での Enter は無視する. コールバックには最後の Enter / Esc も渡るので,
+ * 後始末ができる.
  */
 static char *prompt(const char *label, PromptCb cb)
 {
@@ -986,7 +982,7 @@ static char *prompt(const char *label, PromptCb cb)
     for (;;) {
         set_msg("%s%s", label, buf);
         {
-            /* Cursor column = display width of the message so far. */
+            /* カーソルの桁は, ここまでのメッセージの表示幅. */
             int col = 0;
             for (const char *p = E.msg; *p;) {
                 size_t adv;
@@ -1000,21 +996,21 @@ static char *prompt(const char *label, PromptCb cb)
 
         wint_t k;
         int t = get_wch(&k);
-        if (t == ERR) /* timeout: just redraw (the message may expire) */
+        if (t == ERR) /* タイムアウト: 再描画するだけ(メッセージが消えることがある) */
             continue;
         if (t == KEY_CODE_YES) {
             if (k == KEY_BACKSPACE || k == KEY_DC) {
-                /* Reuse prev_cp() through a temporary Line view of the buffer. */
+                /* 一時的な Line としてバッファを見せて, prev_cp() を再利用する. */
                 len = prev_cp(&(Line){buf, len, cap, NULL, false}, len);
                 buf[len] = '\0';
                 if (cb)
                     cb(buf, k, false);
             } else if (cb) {
-                cb(buf, k, true); /* arrow keys etc. go to the callback */
+                cb(buf, k, true); /* 矢印キーなどはコールバックへ渡す */
             }
             continue;
         }
-        /* Esc cancels. */
+        /* Esc で取り消す. */
         if (k == 27) {
             E.prompt_col = -1;
             set_msg("");
@@ -1023,7 +1019,7 @@ static char *prompt(const char *label, PromptCb cb)
             free(buf);
             return NULL;
         }
-        /* Enter accepts, but not an empty input. */
+        /* Enter で確定する. ただし空の入力は受け付けない. */
         if (k == '\n' || k == '\r') {
             if (len > 0) {
                 E.prompt_col = -1;
@@ -1038,7 +1034,7 @@ static char *prompt(const char *label, PromptCb cb)
             len = prev_cp(&(Line){buf, len, cap, NULL, false}, len);
             buf[len] = '\0';
         } else if (k >= 32) {
-            /* Printable character: append its UTF-8 bytes. */
+            /* 表示できる文字: UTF-8 のバイト列を末尾に足す. */
             char enc[8];
             size_t n = utf8_encode(k, enc);
             if (n && len + n < QUERY_MAX) {
@@ -1057,15 +1053,15 @@ static char *prompt(const char *label, PromptCb cb)
 }
 
 /* ------------------------------------------------------------------ */
-/* Search                                                              */
+/* 検索                                                                */
 /* ------------------------------------------------------------------ */
 
 /**
- * @brief Move to the next match of @p q in direction S.dir.
+ * @brief S.dir の向きに, 次の @p q の一致位置へ移動する.
  *
- * The first call after a change of the query starts at the original cursor
- * (so a match under it is accepted); later calls start just after (or
- * before) the current match.  The search wraps around the buffer.
+ * 検索語が変わった直後の最初の呼び出しは元のカーソル位置から始まる
+ * (カーソルの真下の一致も受け付ける). それ以降は現在の一致の直後(または直前)
+ * から探す. 検索はバッファの端で折り返す.
  */
 static void find_step(const char *q)
 {
@@ -1074,24 +1070,24 @@ static void find_step(const char *q)
         S.len = 0;
         return;
     }
-    /* "fresh": no match yet for this query, start from the original cursor. */
+    /* fresh: この検索語ではまだ一致がない. 元のカーソル位置から始める. */
     bool fresh = S.row < 0;
     int row = fresh ? S.from_cy : S.row;
     size_t col = fresh ? (size_t)S.from_cx : S.col;
 
-    /* Visit every line once, wrapping around; k == E.n revisits the start line
-     * so matches before the cursor on that line are found too. */
+    /* 各行を 1 回ずつ, 折り返しながら調べる. k == E.n では開始行をもう一度調べ,
+     * その行のカーソルより前の一致も見つけられるようにする. */
     for (int k = 0; k <= E.n; k++) {
         int r = ((row + S.dir * k) % E.n + E.n) % E.n;
         const Line *l = &E.lines[r];
         const char *hit = NULL;
         if (S.dir > 0) {
-            /* Forward: first match at or after `start`. */
+            /* 前方: `start` 以降で最初の一致. */
             size_t start = k == 0 ? (fresh ? col : col + 1) : 0;
             if (start <= l->len)
                 hit = strstr(l->s + start, q);
         } else {
-            /* Backward: the last match that begins before `limit`. */
+            /* 後方: `limit` より前から始まる最後の一致. */
             size_t limit = k == 0 ? col : l->len + 1;
             for (const char *p = strstr(l->s, q); p; p = strstr(p + 1, q))
                 if ((size_t)(p - l->s) < limit)
@@ -1105,7 +1101,7 @@ static void find_step(const char *q)
             S.len = n;
             E.cy = r;
             E.cx = (int)S.col;
-            /* Put the match in the middle of the window. */
+            /* 一致位置をウィンドウの中央に置く. */
             E.rowoff = r - text_rows() / 2 > 0 ? r - text_rows() / 2 : 0;
             update_want();
             return;
@@ -1116,11 +1112,11 @@ static void find_step(const char *q)
 }
 
 /**
- * @brief prompt() callback for search: typing restarts, arrow keys step.
+ * @brief 検索用の prompt() コールバック. 文字入力でやり直し, 矢印キーで次へ進む.
  */
 static void find_cb(const char *q, wint_t key, bool special)
 {
-    /* Enter / Esc only end the prompt; nothing to search. */
+    /* Enter と Esc はプロンプトを終えるだけで, 検索はしない. */
     if (!special && (key == 27 || key == '\n' || key == '\r'))
         return;
     if (special) {
@@ -1131,7 +1127,7 @@ static void find_cb(const char *q, wint_t key, bool special)
         else
             return;
     } else {
-        /* The query changed: search again from the original cursor. */
+        /* 検索語が変わった: 元のカーソル位置からやり直す. */
         S.row = -1;
         S.dir = 1;
     }
@@ -1139,14 +1135,14 @@ static void find_cb(const char *q, wint_t key, bool special)
 }
 
 /**
- * @brief Ctrl-F: incremental search.
+ * @brief Ctrl-F: インクリメンタル検索.
  *
- * Esc restores the cursor and scroll position from before the search;
- * Enter keeps the cursor on the match.
+ * Esc で検索前のカーソル位置とスクロール位置に戻る.
+ * Enter でカーソルを一致位置に置いたままにする.
  */
 static void find(void)
 {
-    /* Save the view so Esc can put everything back. */
+    /* Esc で元に戻せるよう, 表示の状態を保存しておく. */
     int cx = E.cx, cy = E.cy, ro = E.rowoff, co = E.coloff, wc = E.want_col;
     S.row = -1;
     S.len = 0;
@@ -1167,10 +1163,10 @@ static void find(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* Commands                                                            */
+/* コマンド                                                            */
 /* ------------------------------------------------------------------ */
 
-/** @brief Ctrl-S: save, asking for a file name first if there is none. */
+/** @brief Ctrl-S: 保存する. ファイル名がなければ先に入力を求める. */
 static void save(void)
 {
     if (!E.filename) {
@@ -1193,8 +1189,8 @@ static void save(void)
 }
 
 /**
- * @brief Ctrl-Q: quit, but require QUIT_CONFIRMS extra presses when there are
- *        unsaved changes.  Any other key resets the counter.
+ * @brief Ctrl-Q: 終了する. 未保存の変更があるときは, さらに QUIT_CONFIRMS 回
+ *        押す必要がある. 他のキーを押すとカウンタは元に戻る.
  */
 static void quit(void)
 {
@@ -1208,7 +1204,7 @@ static void quit(void)
     exit(0);
 }
 
-/** @brief Move the cursor for a KEY_* code (arrows, Home, End, PageUp, PageDown). */
+/** @brief KEY_* コード(矢印, Home, End, PageUp, PageDown)に従ってカーソルを動かす. */
 static void move_cursor(int key)
 {
     Line *l = &E.lines[E.cy];
@@ -1236,11 +1232,11 @@ static void move_cursor(int key)
     case KEY_DOWN:
     case KEY_PPAGE:
     case KEY_NPAGE: {
-        /* Up/Down move one line, PageUp/PageDown one screenful. */
+        /* 上下は 1 行, PageUp / PageDown は 1 画面分動く. */
         int step = (key == KEY_UP || key == KEY_DOWN) ? 1 : rows;
         int target = (key == KEY_UP || key == KEY_PPAGE) ? E.cy - step : E.cy + step;
         E.cy = target < 0 ? 0 : target >= E.n ? E.n - 1 : target;
-        /* Keep the preferred column (not updated: want_col stays). */
+        /* 希望の桁を保つ(want_col は更新しない). */
         E.cx = (int)col_to_off(&E.lines[E.cy], E.want_col);
         break;
     }
@@ -1255,7 +1251,7 @@ static void move_cursor(int key)
     }
 }
 
-/** @brief Wait for one key (500 ms timeout) and run its command. */
+/** @brief キーを 1 つ待ち(タイムアウト 500 ms), そのコマンドを実行する. */
 static void handle_key(void)
 {
     wint_t k;
@@ -1277,15 +1273,15 @@ static void handle_key(void)
         case KEY_ENTER:
             insert_newline();
             break;
-        case KEY_RESIZE: /* ncurses already updated LINES / COLS; redraw happens next loop */
+        case KEY_RESIZE: /* LINES / COLS は ncurses が更新済み. 再描画は次のループで行う */
             break;
         default:
             break;
         }
-        E.quit_left = QUIT_CONFIRMS; /* any other key cancels a pending quit */
+        E.quit_left = QUIT_CONFIRMS; /* 他のキーが押されたら終了待ちを取り消す */
         return;
     }
-    /* Ordinary characters and control keys. */
+    /* 通常の文字と制御キー. */
     switch (k) {
     case 17: /* Ctrl-Q */
         quit();
@@ -1316,7 +1312,7 @@ static void handle_key(void)
     case '\t':
         insert_text("\t", 1);
         break;
-    case 27: /* Esc and Ctrl-C are ignored */
+    case 27: /* Esc と Ctrl-C は無視する */
     case 3:
         break;
     default:
@@ -1332,14 +1328,14 @@ static void handle_key(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* Entry point                                                         */
+/* エントリポイント                                                    */
 /* ------------------------------------------------------------------ */
 
 /**
- * @brief Entry point: `kilo-ncurses [file]`.
+ * @brief エントリポイント: `kilo-ncurses [file]`.
  *
- * The file is loaded before ncurses starts so a read error can be printed to
- * the normal terminal.
+ * ファイルは ncurses を始める前に読み込む. 読み込みエラーを
+ * 通常の端末に表示できるようにするため.
  */
 int main(int argc, char **argv)
 {
@@ -1352,7 +1348,7 @@ int main(int argc, char **argv)
     E.prompt_col = -1;
     buf_insert_row(0, "", 0);
     if (argc == 2) {
-        E.n = 0; /* drop the placeholder line; open_file() fills the buffer */
+        E.n = 0; /* 仮の 1 行を捨てる. バッファは open_file() が埋める */
         open_file(argv[1]);
         if (E.n == 0)
             buf_insert_row(0, "", 0);
@@ -1361,12 +1357,12 @@ int main(int argc, char **argv)
     initscr();
     E.screen_on = true;
     atexit(shutdown_screen);
-    raw();                  /* deliver Ctrl-C/Ctrl-S/Ctrl-Q to us, no signals */
-    noecho();               /* we draw typed characters ourselves */
-    keypad(stdscr, TRUE);   /* decode arrow / function keys */
-    nonl();                 /* Enter arrives as \r, distinct from Ctrl-J */
-    set_escdelay(25);       /* do not wait long to tell Esc from an escape sequence */
-    timeout(500);           /* get_wch() returns ERR after 500 ms so messages can expire */
+    raw();                  /* Ctrl-C / Ctrl-S / Ctrl-Q をシグナルにせず, そのまま受け取る */
+    noecho();               /* 入力した文字は自分で描く */
+    keypad(stdscr, TRUE);   /* 矢印キーやファンクションキーを解釈する */
+    nonl();                 /* Enter を \r として受け取る(Ctrl-J と区別する) */
+    set_escdelay(25);       /* Esc とエスケープシーケンスの区別で長く待たない */
+    timeout(500);           /* get_wch() は 500 ms で ERR を返す. メッセージを消すため */
     init_colors();
     set_msg("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
 

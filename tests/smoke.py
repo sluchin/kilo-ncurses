@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive kilo-ncurses through a pseudo terminal and check what it writes."""
+"""kilo-ncurses を疑似端末(pty)で実際に動かし, 出力とファイルの内容を確認する."""
 
 import fcntl
 import os
@@ -15,7 +15,7 @@ import unittest
 BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "kilo-ncurses")
 
 CTRL_Q, CTRL_S, CTRL_F = b"\x11", b"\x13", b"\x06"
-# keypad mode: xterm sends application-mode cursor keys (ESC O x)
+# keypad モードでは xterm はアプリケーションモードのカーソルキー(ESC O x)を送る
 UP, DOWN, RIGHT, LEFT = b"\x1bOA", b"\x1bOB", b"\x1bOC", b"\x1bOD"
 HOME, END, DELETE = b"\x1bOH", b"\x1bOF", b"\x1b[3~"
 ENTER, BACKSPACE = b"\r", b"\x7f"
@@ -93,7 +93,7 @@ class SmokeTest(unittest.TestCase):
     def test_edit_existing_file(self):
         path = tmpfile(b"abc\ndef\n")
         s = Session(path)
-        s.send(DOWN, HOME, BACKSPACE)  # join the two lines
+        s.send(DOWN, HOME, BACKSPACE)  # 2 行を連結する
         s.send(END, "!", CTRL_S, CTRL_Q)
         self.assertEqual(s.finish(), 0)
         self.assertEqual(read(path), b"abcdef!\n")
@@ -103,7 +103,7 @@ class SmokeTest(unittest.TestCase):
         path = tmpfile(b"abcd\n")
         s = Session(path)
         s.send(RIGHT, RIGHT, ENTER)  # ab / cd
-        s.send(DELETE, CTRL_S, CTRL_Q)  # delete "c"
+        s.send(DELETE, CTRL_S, CTRL_Q)  # "c" を削除する
         self.assertEqual(s.finish(), 0)
         self.assertEqual(read(path), b"ab\nd\n")
         os.unlink(path)
@@ -111,7 +111,7 @@ class SmokeTest(unittest.TestCase):
     def test_utf8_cursor_and_delete(self):
         path = tmpfile("日本語\n".encode())
         s = Session(path)
-        s.send(RIGHT, BACKSPACE)  # removes the first whole character
+        s.send(RIGHT, BACKSPACE)  # 先頭の 1 文字(全体)を削除する
         s.send(CTRL_S, CTRL_Q)
         self.assertEqual(s.finish(), 0)
         self.assertEqual(read(path), "本語\n".encode())
@@ -128,7 +128,7 @@ class SmokeTest(unittest.TestCase):
     def test_incremental_search(self):
         path = tmpfile(b"one\ntwo foo\nthree foo\n")
         s = Session(path)
-        s.send(CTRL_F, "foo", ENTER)  # first match: line 2
+        s.send(CTRL_F, "foo", ENTER)  # 最初の一致: 2 行目
         s.send("X", CTRL_S, CTRL_Q)
         self.assertEqual(s.finish(), 0)
         self.assertEqual(read(path), b"one\ntwo Xfoo\nthree foo\n")
@@ -137,12 +137,12 @@ class SmokeTest(unittest.TestCase):
     def test_search_next_with_arrow_and_cancel(self):
         path = tmpfile(b"foo\nbar foo\n")
         s = Session(path)
-        s.send(CTRL_F, "foo", DOWN, ENTER)  # arrow moves to the next match
+        s.send(CTRL_F, "foo", DOWN, ENTER)  # 矢印キーで次の一致へ移る
         s.send("X", CTRL_S, CTRL_Q)
         self.assertEqual(s.finish(), 0)
         self.assertEqual(read(path), b"foo\nbar Xfoo\n")
         s2 = Session(path)
-        s2.send(CTRL_F, "bar", "\x1b")  # Esc restores the cursor
+        s2.send(CTRL_F, "bar", "\x1b")  # Esc でカーソルが元に戻る
         s2.send("Y", CTRL_S, CTRL_Q)
         self.assertEqual(s2.finish(), 0)
         self.assertEqual(read(path), b"Yfoo\nbar Xfoo\n")
@@ -156,13 +156,13 @@ class SmokeTest(unittest.TestCase):
         self.assertIn(b"unsaved changes", s.out)
         s.send(CTRL_Q)
         self.assertEqual(s.finish(), 0)
-        self.assertEqual(read(path), b"x\n")  # nothing was saved
+        self.assertEqual(read(path), b"x\n")  # 何も保存されていない
         os.unlink(path)
 
     def test_vertical_move_keeps_column(self):
         path = tmpfile(b"abcdef\nab\nabcdef\n")
         s = Session(path)
-        s.send(END, DOWN, DOWN, "!", CTRL_S, CTRL_Q)  # column 6 survives the short line
+        s.send(END, DOWN, DOWN, "!", CTRL_S, CTRL_Q)  # 短い行を通っても 6 桁目が保たれる
         self.assertEqual(s.finish(), 0)
         self.assertEqual(read(path), b"abcdef\nab\nabcdef!\n")
         os.unlink(path)
@@ -178,7 +178,7 @@ class SmokeTest(unittest.TestCase):
     def test_block_comment_spans_lines(self):
         path = tmpfile(b"/* a\nb */ int x;\n", suffix=".c")
         s = Session(path)
-        # the comment colour (cyan) must stay on until the closing marker on line 2
+        # コメント色(シアン)は, 2 行目の閉じ記号まで続かなければならない
         self.assertRegex(s.out, rb"\x1b\[36m/\* a(?:(?!\x1b\[39m).)*b \*/\x1b\[39m")
         s.send(CTRL_Q)
         self.assertEqual(s.finish(), 0)
