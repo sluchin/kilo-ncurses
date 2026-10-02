@@ -134,6 +134,9 @@ static struct {
  * @brief メッセージバーの文字列を設定する(printf 形式).
  *
  * メッセージは 5 秒間, またはプロンプトが開いている間表示される.
+ *
+ * @param fmt printf 形式の書式文字列.
+ * @param ... 書式に対応する引数.
  */
 static void set_msg(const char *fmt, ...)
 {
@@ -173,6 +176,10 @@ static void die(const char *what)
  * @brief 失敗しない realloc(). メモリ不足のときはエディタを異常終了させる.
  *
  * サイズ 0 の要求は 1 に切り上げるので, NULL は常に失敗を意味する.
+ *
+ * @param p 再確保するメモリ. NULL なら新規に確保する.
+ * @param n 新しいサイズ(バイト).
+ * @return 確保したメモリへのポインタ(NULL にはならない).
  */
 static void *xrealloc(void *p, size_t n)
 {
@@ -236,6 +243,10 @@ static int char_width(const char *s, size_t n, int col, size_t *adv, int *kind)
 
 /**
  * @brief 行 @p l のバイトオフセット @p upto に対応する表示桁を返す.
+ *
+ * @param l 対象の行.
+ * @param upto 行内のバイトオフセット.
+ * @return 行頭からの表示桁.
  */
 static int disp_col(const Line *l, size_t upto)
 {
@@ -255,6 +266,10 @@ static int disp_col(const Line *l, size_t upto)
  *
  * 上下移動で使う. @p target をまたぐ全角文字は飛ばさないので,
  * カーソルが文字の途中に来ることはない.
+ *
+ * @param l 対象の行.
+ * @param target 表示桁.
+ * @return 行内のバイトオフセット.
  */
 static size_t col_to_off(const Line *l, int target)
 {
@@ -275,6 +290,10 @@ static size_t col_to_off(const Line *l, int target)
 /**
  * @brief @p pos にある文字の次の文字のバイトオフセットを返す
  *        (行の長さで頭打ち).
+ *
+ * @param l 対象の行.
+ * @param pos 行内のバイトオフセット.
+ * @return 次の文字のバイトオフセット.
  */
 static size_t next_cp(const Line *l, size_t pos)
 {
@@ -290,6 +309,10 @@ static size_t next_cp(const Line *l, size_t pos)
  * @brief @p pos の直前にある文字のバイトオフセットを返す.
  *
  * UTF-8 の継続バイト(10xxxxxx)を最大 4 バイトまで戻る.
+ *
+ * @param l 対象の行.
+ * @param pos 行内のバイトオフセット.
+ * @return 直前の文字のバイトオフセット.
  */
 static size_t prev_cp(const Line *l, size_t pos)
 {
@@ -310,6 +333,10 @@ static size_t prev_cp(const Line *l, size_t pos)
  *
  * C 系の言語では識別子に使えない文字すべてが区切りになる. Lisp 系では
  * 空白・括弧・引用符だけが区切りなので, `let*` や `set!` は 1 語のままになる.
+ *
+ * @param sy 言語の定義.
+ * @param c 調べるバイト.
+ * @return 区切りなら true.
  */
 static bool is_delim(const Syntax *sy, unsigned char c)
 {
@@ -320,14 +347,28 @@ static bool is_delim(const Syntax *sy, unsigned char c)
     return !(isalnum(c) || c == '_' || c >= 0x80);
 }
 
-/** @brief 行 @p l のバイトオフセット @p i に文字列 @p p があるかどうかを返す. */
+/**
+ * @brief 行 @p l のバイトオフセット @p i に文字列 @p p があるかどうかを返す.
+ *
+ * @param l 対象の行.
+ * @param i 行内のバイトオフセット.
+ * @param p 比較する文字列.
+ * @return 一致すれば true.
+ */
 static bool at(const Line *l, size_t i, const char *p)
 {
     size_t n = strlen(p);
     return i + n <= l->len && memcmp(l->s + i, p, n) == 0;
 }
 
-/** @brief @p w から @p n バイトが, NULL 終端の @p list のどれかと一致するかどうかを返す. */
+/**
+ * @brief @p w から @p n バイトが, NULL 終端の @p list のどれかと一致するかどうかを返す.
+ *
+ * @param list NULL 終端の文字列の配列.
+ * @param w 調べる文字列の先頭.
+ * @param n 調べる文字列のバイト数.
+ * @return 一致する要素があれば true.
+ */
 static bool in_list(const char *const *list, const char *w, size_t n)
 {
     for (; *list; list++)
@@ -496,6 +537,8 @@ static void rehighlight(int from, int force)
  * @brief @p filename の拡張子またはベース名から E.syntax を選ぶ.
  *
  * 一致するものがなければ E.syntax は NULL(プレーンテキスト)のまま.
+ *
+ * @param filename ファイル名. NULL ならプレーンテキストにする.
  */
 static void select_syntax(const char *filename)
 {
@@ -517,7 +560,12 @@ static void select_syntax(const char *filename)
 /* テキストバッファ                                                    */
 /* ------------------------------------------------------------------ */
 
-/** @brief 行 @p l が NUL を含めて @p need バイトを保持できるようにする(容量は倍々に増やす). */
+/**
+ * @brief 行 @p l が NUL を含めて @p need バイトを保持できるようにする(容量は倍々に増やす).
+ *
+ * @param l 対象の行.
+ * @param need 保持したいバイト数(NUL を除く).
+ */
 static void line_reserve(Line *l, size_t need)
 {
     if (need + 1 > l->cap) {
@@ -529,7 +577,14 @@ static void line_reserve(Line *l, size_t need)
     }
 }
 
-/** @brief 行 @p l のバイトオフセット @p at_ に @p s の @p n バイトを挿入する. */
+/**
+ * @brief 行 @p l のバイトオフセット @p at_ に @p s の @p n バイトを挿入する.
+ *
+ * @param l 対象の行.
+ * @param at_ 挿入位置(バイトオフセット).
+ * @param s 挿入するバイト列.
+ * @param n 挿入するバイト数.
+ */
 static void line_insert(Line *l, size_t at_, const char *s, size_t n)
 {
     line_reserve(l, l->len + n);
@@ -539,7 +594,13 @@ static void line_insert(Line *l, size_t at_, const char *s, size_t n)
     l->s[l->len] = '\0';
 }
 
-/** @brief 行 @p l のバイトオフセット @p at_ から @p n バイトを削除する. */
+/**
+ * @brief 行 @p l のバイトオフセット @p at_ から @p n バイトを削除する.
+ *
+ * @param l 対象の行.
+ * @param at_ 削除を始める位置(バイトオフセット).
+ * @param n 削除するバイト数.
+ */
 static void line_remove(Line *l, size_t at_, size_t n)
 {
     memmove(l->s + at_, l->s + at_ + n, l->len - at_ - n);
@@ -551,6 +612,10 @@ static void line_remove(Line *l, size_t at_, size_t n)
  * @brief 指定の文字列を持つ新しい行を, 行番号 @p at_ として挿入する.
  *
  * それ以降の行は 1 つ下にずれる. 新しい行のハイライトはまだ計算されていない.
+ *
+ * @param at_ 挿入先の行番号.
+ * @param s 新しい行の文字列.
+ * @param n 文字列のバイト数.
  */
 static void buf_insert_row(int at_, const char *s, size_t n)
 {
@@ -569,7 +634,11 @@ static void buf_insert_row(int at_, const char *s, size_t n)
     E.n++;
 }
 
-/** @brief 行番号 @p at_ の行を削除してメモリを解放する. */
+/**
+ * @brief 行番号 @p at_ の行を削除してメモリを解放する.
+ *
+ * @param at_ 削除する行番号.
+ */
 static void buf_delete_row(int at_)
 {
     free(E.lines[at_].s);
@@ -593,7 +662,12 @@ static void update_want(void)
 /* 編集操作                                                            */
 /* ------------------------------------------------------------------ */
 
-/** @brief カーソル位置に @p n バイト(UTF-8 の 1 文字)を挿入する. */
+/**
+ * @brief カーソル位置に @p n バイト(UTF-8 の 1 文字)を挿入する.
+ *
+ * @param s 挿入するバイト列.
+ * @param n 挿入するバイト数.
+ */
 static void insert_text(const char *s, size_t n)
 {
     line_insert(&E.lines[E.cy], (size_t)E.cx, s, n);
@@ -681,6 +755,8 @@ static void delete_forward(void)
  *
  * ファイルが存在しなくてもエラーにはしない. 空の状態で始まり,
  * 最初の保存でファイルが作られる. 行末の CR と LF は取り除く.
+ *
+ * @param path 読み込むファイルのパス.
  */
 static void open_file(const char *path)
 {
@@ -771,7 +847,11 @@ fail:
 /* 画面                                                                */
 /* ------------------------------------------------------------------ */
 
-/** @brief テキストに使う画面の行数(ステータスバーとメッセージバーを除く). */
+/**
+ * @brief テキストに使う画面の行数(ステータスバーとメッセージバーを除く).
+ *
+ * @return テキスト行の数(最小 1).
+ */
 static int text_rows(void)
 {
     return LINES > 2 ? LINES - 2 : 1;
@@ -814,6 +894,8 @@ static void init_colors(void)
  * @brief ハイライト種別 @p h に対応する描画属性を選ぶ.
  *
  * 色に対応していない端末では, 太字・暗め・下線・反転で代用する.
+ *
+ * @param h ハイライト種別(HL_*).
  */
 static void set_hl_attr(int h)
 {
@@ -832,6 +914,10 @@ static void set_hl_attr(int h)
  * 横スクロール, タブ(空白に展開), 制御文字(^X と表示), 不正なバイト(? と表示),
  * 検索の一致位置の重ね描きを処理する. 左端で切れた全角文字は空白に置き換え,
  * 右端に収まらない文字は描かない.
+ *
+ * @param l 描く行.
+ * @param idx 行番号(検索の一致位置の判定に使う).
+ * @param y 描画先の画面の行.
  */
 static void draw_line(const Line *l, int idx, int y)
 {
@@ -956,6 +1042,9 @@ typedef void (*PromptCb)(const char *buf, wint_t key, bool special);
 /**
  * @brief ワイド文字 @p k を UTF-8 にして @p out(8 バイト以上)へ書く.
  * @return 書き込んだバイト数. 符号化できなければ 0.
+ *
+ * @param k 符号化するワイド文字.
+ * @param[out] out 結果を書き込む領域(8 バイト以上).
  */
 static size_t utf8_encode(wint_t k, char *out)
 {
@@ -1062,6 +1151,8 @@ static char *prompt(const char *label, PromptCb cb)
  * 検索語が変わった直後の最初の呼び出しは元のカーソル位置から始まる
  * (カーソルの真下の一致も受け付ける). それ以降は現在の一致の直後(または直前)
  * から探す. 検索はバッファの端で折り返す.
+ *
+ * @param q 検索する文字列.
  */
 static void find_step(const char *q)
 {
@@ -1113,6 +1204,10 @@ static void find_step(const char *q)
 
 /**
  * @brief 検索用の prompt() コールバック. 文字入力でやり直し, 矢印キーで次へ進む.
+ *
+ * @param q 現在の検索語.
+ * @param key 押されたキー.
+ * @param special key がファンクションキー(KEY_*)なら true.
  */
 static void find_cb(const char *q, wint_t key, bool special)
 {
@@ -1204,7 +1299,11 @@ static void quit(void)
     exit(0);
 }
 
-/** @brief KEY_* コード(矢印, Home, End, PageUp, PageDown)に従ってカーソルを動かす. */
+/**
+ * @brief KEY_* コード(矢印, Home, End, PageUp, PageDown)に従ってカーソルを動かす.
+ *
+ * @param key 移動の種類を表す KEY_* コード.
+ */
 static void move_cursor(int key)
 {
     Line *l = &E.lines[E.cy];
@@ -1336,6 +1435,10 @@ static void handle_key(void)
  *
  * ファイルは ncurses を始める前に読み込む. 読み込みエラーを
  * 通常の端末に表示できるようにするため.
+ *
+ * @param argc コマンドライン引数の数.
+ * @param argv コマンドライン引数. 省略可能な 1 つ目はファイル名.
+ * @return 正常終了なら 0, 使い方が誤っていれば 1.
  */
 int main(int argc, char **argv)
 {
