@@ -56,3 +56,5 @@ dkms.conf
 
 # build output
 /kilo-ncurses
+/build/
+__pycache__/

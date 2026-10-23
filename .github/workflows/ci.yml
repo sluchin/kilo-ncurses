@@ -1,0 +1,41 @@
+name: CI
+
+# kilo-ncurses の CI.
+#   test    : ビルドして, 疑似端末で動かすテスト (tests/smoke.py) を実行する. 警告が出たら失敗する
+#   coverage: カバレッジ (gcovr). 行と分岐のどちらかが 100% を下回ると失敗する. 報告を artifact に保存する
+
+on:
+  push:
+    branches: [ main, ccr-* ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential libncurses-dev pkg-config python3
+      - name: Build
+        run: make CFLAGS="-O2 -Werror"
+      - name: Test
+        run: make test
+
+  coverage:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential libncurses-dev pkg-config python3 gcovr
+      - name: Coverage
+        run: make coverage
+      # 失敗したときに, どこが通っていないかを見られるように, 報告を残す.
+      - name: Upload the coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: build/coverage/*.html
+          if-no-files-found: warn
+          retention-days: 7

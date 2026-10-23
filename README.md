@@ -21,6 +21,7 @@ kilo のコードの移植ではなく、独立した実装です。
 - ncursesw（ワイド文字版 ncurses）の開発パッケージ
 - pkg-config（任意。ncursesw の場所を自動で見つけるために使います）
 - Python 3（`make test` を実行する場合のみ）
+- gcovr（`make coverage` を実行する場合のみ）
 
 ### 依存パッケージのインストール
 
@@ -90,6 +91,18 @@ make CFLAGS="-O2 -I/opt/ncurses/include" LDLIBS="-L/opt/ncurses/lib -lncursesw"
 ```sh
 make test
 ```
+
+カバレッジは、計測用にビルドしてテストを実行し、[gcovr](https://gcovr.com/) で集計します。
+行・分岐のどちらかが 100% を下回ると失敗します。結果は `build/coverage/index.html` です。
+
+```sh
+make coverage
+```
+
+保存の途中の失敗（`fwrite` や `fsync` など）とメモリ不足は、テストのときだけ `LD_PRELOAD` で
+読み込む `tests/fault.c` で起こします（`make test` では、これらのテストを飛ばします）。
+
+GitHub Actions（`.github/workflows/ci.yml`）でも、push のたびに `make test` と `make coverage` を実行します。
 
 ## kilo との主な違い
 
