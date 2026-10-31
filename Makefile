@@ -26,4 +26,10 @@ coverage:
 clean:
 	rm -rf kilo-ncurses build
 
-.PHONY: test coverage clean
+format:
+	npx --yes markdownlint-cli2 --fix
+
+format-check:
+	npx --yes markdownlint-cli2
+
+.PHONY: test coverage clean format format-check

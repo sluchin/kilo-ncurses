@@ -39,3 +39,10 @@ jobs:
           path: build/coverage/*.html
           if-no-files-found: warn
           retention-days: 7
+
+  format:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Format check
+        run: make format-check
