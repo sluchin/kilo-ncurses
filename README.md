@@ -1,7 +1,7 @@
 # kilo-ncurses
 
 ncurses を使った、小さなターミナルテキストエディタです。Salvatore Sanfilippo (antirez) 氏の
-[kilo](https://github.com/antirez/kilo) に着想を得て、ncurses を前提に一から書き直しました。
+[kilo](https://github.com/antirez/kilo) に着想を得て、ncurses を前提に一から書き直したものです。
 kilo のコードの移植ではなく、独立した実装です。
 
 ## 機能
