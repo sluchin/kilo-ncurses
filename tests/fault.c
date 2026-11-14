@@ -24,7 +24,7 @@
 #include <wchar.h>
 
 /**
- * @brief KILO_FAULT が「@p name:N」なら, N を返す.
+ * @brief KILO_FAULT が「@p name:N」なら N を返す.
  * @param[in] name 関数の名前.
  * @param[in] len @p name の長さ.
  * @return N. 違えば (unsigned long)-1.
@@ -150,7 +150,7 @@ int fclose(FILE *fp)
     if (tmp_fd != -1 && fileno(fp) == tmp_fd)
         tmp_fd = -1;
     int r = f(fp);
-    if (fail) { /* 閉じてから, 失敗を返す */
+    if (fail) { /* 閉じてから失敗を返す */
         errno = EIO;
         return EOF;
     }
