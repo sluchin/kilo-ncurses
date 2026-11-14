@@ -76,7 +76,7 @@ make CFLAGS="-O2 -I/opt/ncurses/include" LDLIBS="-L/opt/ncurses/lib -lncursesw"
 ## キー操作
 
 | キー | 動作 |
-|---|---|
+| --- | --- |
 | Ctrl-S | 保存 (ファイル名がなければ入力を求める) |
 | Ctrl-Q | 終了 (未保存の変更があるときは、さらに 2 回押す) |
 | Ctrl-F | 検索 (入力するたびに移動、矢印キーで次・前、Enter で確定、Esc で取り消し) |
@@ -107,7 +107,7 @@ GitHub Actions (`.github/workflows/ci.yml`) でも、push のたびに `make tes
 ## kilo との主な違い
 
 | | kilo | kilo-ncurses |
-|---|---|---|
+| --- | --- | --- |
 | 端末の制御 | termios とエスケープシーケンスを直接扱う | ncurses |
 | 依存 | なし | ncursesw |
 | 文字 | バイト単位 | UTF-8 (表示幅を考慮) |
